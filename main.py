@@ -45,7 +45,7 @@ class TrainingTracker:
                 except ValueError:
                     print("Invalid input. Please enter a valid positive integer for the initial high score.")
 
-            threshold = 0.95 * highscore
+            threshold = round(0.95 * highscore, 2)
             task_data = {
                 "highscore": highscore,
                 "threshold": threshold,
@@ -81,7 +81,7 @@ class TrainingTracker:
 
             for added_task in tasks_added:
                 highscore = int(input(f"Enter initial high score for task {added_task}: "))
-                threshold = 0.95 * highscore
+                threshold = round(0.95 * highscore, 2)
                 task_data = {
                     "highscore": highscore,
                     "threshold": threshold,
@@ -91,7 +91,7 @@ class TrainingTracker:
 
             for modified_task in tasks_modified:
                 new_highscore = int(input(f"Enter new initial high score for task {modified_task}: "))
-                threshold = 0.95 * new_highscore
+                threshold = round(0.95 * new_highscore, 2)
                 db.collection("tasks").document(f"{new_name}_{modified_task}").update({
                     "highscore": new_highscore,
                     "threshold": threshold,
@@ -128,14 +128,28 @@ class TrainingTracker:
             playlist_name = self.current_playlist['name']
             tasks = db.collection("tasks").get()
             print(f"Tasks for {playlist_name} playlist:")
+            print("\n{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
+                "Task", "Highscore", "Old Highscore", "New Highscore", "Avg Last 10", "Threshold", "Sensitivity",
+                "Repetitions", "Date"
+            ))
+
             for task_name in self.current_playlist['tasks']:
                 task_ref = db.collection("tasks").document(f"{playlist_name}_{task_name}")
                 task_data = task_ref.get().to_dict()
                 if task_data:
-                    print(f"Name: {task_name}, Highscore: {task_data.get('highscore', 'N/A')}, "
-                          f"Avg Last 10: {task_data.get('avg_last_10', 'N/A')}, "
-                          f"Threshold: {task_data.get('threshold', 'N/A')}, "
-                          f"cm/360: {task_data.get('sensitivity', 'N/A')}")
+                    task_id = f"{playlist_name}_{task_name}"
+                    highscore = task_data.get('highscore', 'N/A')
+                    old_highscore = task_data.get('old_highscore', 'N/A')
+                    new_highscore = task_data.get('new_highscore', 'N/A')
+                    avg_last_10 = task_data.get('avg_last_10', 'N/A')
+                    threshold = task_data.get('threshold', 'N/A')
+                    sensitivity = task_data.get('sensitivity', 'N/A')
+                    repetitions = len(task_data.get('scores', []))
+
+                    print("{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
+                        task_id, highscore, old_highscore, new_highscore, avg_last_10, threshold, sensitivity,
+                        repetitions, 'N/A'
+                    ))
                 else:
                     print(f"No data available for task: {task_name}")
         else:
@@ -144,9 +158,26 @@ class TrainingTracker:
     def view_all_tasks(self):
         tasks = db.collection("tasks").get()
         print("All tasks with highscores:")
+        print("\n{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
+            "Task", "Highscore", "Old Highscore", "New Highscore", "Avg Last 10", "Threshold", "Sensitivity",
+            "Repetitions", "Date"
+        ))
+
         for task in tasks:
             task_data = task.to_dict()
-            print(f"Task: {task.id}, Highscore: {task_data.get('highscore', 'N/A')}")
+            task_id = task.id
+            highscore = task_data.get('highscore', 'N/A')
+            old_highscore = task_data.get('old_highscore', 'N/A')
+            new_highscore = task_data.get('new_highscore', 'N/A')
+            avg_last_10 = task_data.get('avg_last_10', 'N/A')
+            threshold = task_data.get('threshold', 'N/A')
+            sensitivity = task_data.get('sensitivity', 'N/A')
+            repetitions = len(task_data.get('scores', []))
+
+            print("{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
+                task_id, highscore, old_highscore, new_highscore, avg_last_10, threshold, sensitivity, repetitions,
+                'N/A'
+            ))
 
     def update_data(self):
         if self.current_playlist:
@@ -200,15 +231,25 @@ class TrainingTracker:
 
                 updated_scores = current_scores + [{"score": score, "date": date_today} for score in new_scores]
 
-                highscore = max(updated_scores)
-                avg_last_10 = round(sum(updated_scores[-10:]) / min(10, len(updated_scores)), 2)
-                threshold = 0.95 * highscore
+                highscore = max(updated_scores, key=lambda x: x['score'])['score']
+                old_highscore = task_data.get("highscore", "N/A")
+                new_highscore = max(old_highscore, highscore)
+                last_10_scores = [score['score'] for score in updated_scores[-10:]]
+                avg_last_10 = round(sum(last_10_scores) / min(10, len(last_10_scores)), 2) if last_10_scores else 'N/A'
+                threshold = round(0.95 * highscore, 2)
+                highscore_beaten_today = any(score > new_highscore for score in new_scores)
+                threshold_achieved_today = new_highscore >= threshold
 
                 task_data = {
                     "sensitivity": sensitivity,
-                    "highscore": highscore,
+                    "highscore": new_highscore,
+                    "old_highscore": old_highscore,
+                    "new_highscore": highscore,
                     "avg_last_10": avg_last_10,
                     "threshold": threshold,
+                    "scores": updated_scores,
+                    "threshold_achieved": threshold_achieved_today,
+                    "highscore_beaten": highscore_beaten_today,
                 }
 
                 task_ref.set(task_data, merge=True)
@@ -225,9 +266,10 @@ class TrainingTracker:
             current_scores = task_data.get("scores", [])
 
             if current_scores:
-                avg_last_10 = round(sum(current_scores[-10:]) / min(10, len(current_scores)), 2)
-                highscore = max(current_scores)
-                threshold = 0.95 * highscore
+                last_10_scores = [score['score'] for score in current_scores[-10:]]
+                avg_last_10 = round(sum(last_10_scores) / min(10, len(last_10_scores)), 2) if last_10_scores else 'N/A'
+                highscore = max(current_scores, key=lambda x: x['score'])['score']
+                threshold = round(0.95 * highscore, 2)
 
                 task_ref = db.collection("tasks").document(task.id)
                 task_ref.set({"avg_last_10": avg_last_10, "highscore": highscore, "threshold": threshold}, merge=True)
@@ -259,40 +301,57 @@ class TrainingTracker:
             print("Task deletion aborted.")
 
     def view_data(self, time_period):
-        playlists = self.get_playlists()
+        all_tasks = db.collection("tasks").get()
 
-        if not playlists:
-            print("No playlists available. Please create a playlist first.")
+        if not all_tasks:
+            print("No tasks available. Please update tasks first.")
             return
 
-        for playlist in playlists:
-            playlist_name = playlist['name']
-            playlist_tasks = playlist['tasks']
+        print("\n{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
+            "Task", "Highscore", "New Highscore", "Avg Last 10", f"Avg {time_period.capitalize()}",
+            "Threshold Achieved", "Sensitivity", "Repetitions"
+        ))
 
-            print(f"\nPlaylist: {playlist_name}")
-            print("\n{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
-                "Task", "Highscore", "New Highscore", "Avg Last 10", "Avg Today", "Threshold Achieved", "Sensitivity"
-            ))
+        today = datetime.today()
 
-            for task_name in playlist_tasks:
-                task_ref = db.collection("tasks").document(f"{playlist_name}_{task_name}")
-                task_data = task_ref.get().to_dict()
+        for task in all_tasks:
+            task_data = task.to_dict()
+            task_id = task.id
+            avg_today = self.calculate_avg_for_period(task_data.get('scores', []), time_period)
 
-                if task_data:
-                    task_id = f"{playlist_name}_{task_name}"
-                    highscore = task_data.get('highscore', 'N/A')
+            if avg_today != 'N/A':
+                relevant_scores = [score for score in task_data.get('scores', [])
+                                   if datetime.strptime(score['date'], '%Y-%m-%d') >= self.get_start_date(today,
+                                                                                                          time_period)]
+
+                if relevant_scores:
+                    highscore = max(relevant_scores, key=lambda x: x['score'])['score']
                     new_highscore = task_data.get('new_highscore', 'N/A')
                     avg_last_10 = task_data.get('avg_last_10', 'N/A')
-                    avg_today = self.calculate_avg_for_period(task_data.get('scores', []), time_period)
                     threshold_achieved = task_data.get('threshold_achieved', 'N/A')
                     sensitivity = task_data.get('sensitivity', 'N/A')
+                    repetitions = len(task_data.get('scores', []))
 
-                    print("{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
-                        task_id, highscore, new_highscore, avg_last_10, avg_today, threshold_achieved, sensitivity
+                    print("{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
+                        task_id, highscore, new_highscore, avg_last_10, avg_today, threshold_achieved, sensitivity,
+                        repetitions
                     ))
-
                 else:
-                    print(f"No data available for task: {task_name}")
+                    print(f"No data available for task: {task_id}")
+            else:
+                print(f"No data available for task: {task_id}")
+
+    def get_start_date(self, today, time_period):
+        if time_period == 'day':
+            return today
+        elif time_period == 'week':
+            return today - timedelta(days=today.weekday())
+        elif time_period == 'month':
+            return today.replace(day=1)
+        elif time_period == 'year':
+            return today.replace(month=1, day=1)
+        else:
+            return today
 
     def calculate_avg_for_period(self, scores, time_period):
         today = datetime.today()
@@ -307,8 +366,12 @@ class TrainingTracker:
         else:
             return 'N/A'
 
-        relevant_scores = [score['score'] for score in scores if
-                           datetime.strptime(score['date'], '%Y-%m-%d') >= start_date]
+        relevant_scores = [
+            score['score']
+            for score in scores
+            if datetime.strptime(score['date'], '%Y-%m-%d') >= start_date
+        ]
+
         return round(sum(relevant_scores) / len(relevant_scores), 2) if relevant_scores else 'N/A'
 
 
