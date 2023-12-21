@@ -1,9 +1,12 @@
 import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, firestore
+from google.cloud.firestore import ArrayUnion
 from datetime import datetime, timedelta
 import os
 import platform
+import warnings
+
 
 cred = credentials.Certificate("cred.json")
 firebase_admin.initialize_app(cred)
@@ -28,7 +31,16 @@ class TrainingTracker:
         print("Available playlists:")
         for idx, playlist in enumerate(playlists, start=1):
             print(f"{idx}. Name: {playlist['name']}, Tasks: {', '.join(playlist['tasks'])}")
-        choice = int(input("Choose playlist (enter index): "))
+        while True:
+            playlist_choice = input("Choose playlist (enter index): ")
+            if playlist_choice:
+                try:
+                    choice = int(playlist_choice)
+                    break
+                except ValueError:
+                    print("Invalid input. Please enter a valid integer for the playlist index.")
+            else:
+                print("Invalid input. Please enter a non-empty value for the playlist index.")
         self.current_playlist = playlists[choice - 1]
 
     def create_playlist(self):
@@ -62,8 +74,21 @@ class TrainingTracker:
         print("Available playlists:")
         for idx, playlist in enumerate(playlists, start=1):
             print(f"{idx}. Name: {playlist['name']}, Tasks: {', '.join(playlist['tasks'])}")
+
         choice = int(input("Choose playlist to edit (enter index): "))
-        playlist_id = playlists[choice - 1].id
+
+        selected_playlist = playlists[choice - 1]
+        playlist_name = selected_playlist.get('name')
+
+        if not playlist_name:
+            print("Error: Playlist name not found.")
+            return
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            playlist_query = db.collection("playlists").where("name", "==", playlist_name).limit(1)
+            playlist_data = playlist_query.stream()
+            playlist_id = next(playlist_data).id
 
         new_name = input("Enter new playlist name (leave empty to keep the current name): ")
         new_tasks = input("Enter new playlist tasks (comma-separated, leave empty to keep the current tasks): ")
@@ -74,7 +99,7 @@ class TrainingTracker:
         if new_tasks:
             new_task_list = new_tasks.split(",")
 
-            current_tasks = playlists[choice - 1]['tasks']
+            current_tasks = selected_playlist.get('tasks', [])
 
             tasks_added = set(new_task_list) - set(current_tasks)
             tasks_modified = set(current_tasks) - set(new_task_list)
@@ -85,7 +110,6 @@ class TrainingTracker:
                 task_data = {
                     "highscore": highscore,
                     "threshold": threshold,
-                    "scores": [],
                 }
                 db.collection("tasks").document(f"{new_name}_{added_task}").set(task_data)
 
@@ -126,11 +150,10 @@ class TrainingTracker:
     def view_tasks(self):
         if self.current_playlist:
             playlist_name = self.current_playlist['name']
-            tasks = db.collection("tasks").get()
             print(f"Tasks for {playlist_name} playlist:")
-            print("\n{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
+            print("\n{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
                 "Task", "Highscore", "Old Highscore", "New Highscore", "Avg Last 10", "Threshold", "Sensitivity",
-                "Repetitions", "Date"
+                "Repetitions"
             ))
 
             for task_name in self.current_playlist['tasks']:
@@ -146,9 +169,9 @@ class TrainingTracker:
                     sensitivity = task_data.get('sensitivity', 'N/A')
                     repetitions = len(task_data.get('scores', []))
 
-                    print("{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
+                    print("{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
                         task_id, highscore, old_highscore, new_highscore, avg_last_10, threshold, sensitivity,
-                        repetitions, 'N/A'
+                        repetitions
                     ))
                 else:
                     print(f"No data available for task: {task_name}")
@@ -158,9 +181,9 @@ class TrainingTracker:
     def view_all_tasks(self):
         tasks = db.collection("tasks").get()
         print("All tasks with highscores:")
-        print("\n{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
+        print("\n{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
             "Task", "Highscore", "Old Highscore", "New Highscore", "Avg Last 10", "Threshold", "Sensitivity",
-            "Repetitions", "Date"
+            "Repetitions"
         ))
 
         for task in tasks:
@@ -174,9 +197,8 @@ class TrainingTracker:
             sensitivity = task_data.get('sensitivity', 'N/A')
             repetitions = len(task_data.get('scores', []))
 
-            print("{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
-                task_id, highscore, old_highscore, new_highscore, avg_last_10, threshold, sensitivity, repetitions,
-                'N/A'
+            print("{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
+                task_id, highscore, old_highscore, new_highscore, avg_last_10, threshold, sensitivity, repetitions
             ))
 
     def update_data(self):
@@ -250,6 +272,7 @@ class TrainingTracker:
                     "scores": updated_scores,
                     "threshold_achieved": threshold_achieved_today,
                     "highscore_beaten": highscore_beaten_today,
+                    "update": date_today,
                 }
 
                 task_ref.set(task_data, merge=True)
@@ -307,9 +330,9 @@ class TrainingTracker:
             print("No tasks available. Please update tasks first.")
             return
 
-        print("\n{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
-            "Task", "Highscore", "New Highscore", "Avg Last 10", f"Avg {time_period.capitalize()}",
-            "Threshold Achieved", "Sensitivity", "Repetitions"
+        print("\n{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
+            "Date", "Task", "Highscore", "New Highscore", "Avg Last 10", f"Avg {time_period.capitalize()}",
+            "Threshold", "Sensitivity", "Repetitions"
         ))
 
         today = datetime.today()
@@ -325,15 +348,17 @@ class TrainingTracker:
                                                                                                           time_period)]
 
                 if relevant_scores:
-                    highscore = max(relevant_scores, key=lambda x: x['score'])['score']
+                    old_highscore = task_data.get('old_highscore', 'N/A')
                     new_highscore = task_data.get('new_highscore', 'N/A')
                     avg_last_10 = task_data.get('avg_last_10', 'N/A')
                     threshold_achieved = task_data.get('threshold_achieved', 'N/A')
                     sensitivity = task_data.get('sensitivity', 'N/A')
-                    repetitions = len(task_data.get('scores', []))
+                    repetitions = len(relevant_scores)
+                    date_today = task_data.get('update', 'N/A')
 
-                    print("{:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
-                        task_id, highscore, new_highscore, avg_last_10, avg_today, threshold_achieved, sensitivity,
+                    print("{:<20} {:<20} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15} {:<15}".format(
+                        date_today, task_id, old_highscore, new_highscore, avg_last_10, avg_today, threshold_achieved,
+                        sensitivity,
                         repetitions
                     ))
                 else:
@@ -355,14 +380,16 @@ class TrainingTracker:
 
     def calculate_avg_for_period(self, scores, time_period):
         today = datetime.today()
+
         if time_period == 'day':
-            start_date = today
+            start_date = today.replace(hour=0, minute=0, second=0, microsecond=0)
         elif time_period == 'week':
             start_date = today - timedelta(days=today.weekday())
+            start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
         elif time_period == 'month':
-            start_date = today.replace(day=1)
+            start_date = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         elif time_period == 'year':
-            start_date = today.replace(month=1, day=1)
+            start_date = today.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
         else:
             return 'N/A'
 
@@ -376,17 +403,14 @@ class TrainingTracker:
 
 
 if __name__ == "__main__":
-    tracker = TrainingTracker()
+    tracker = Tracker()
 
     while True:
-        clear_console()
-        tracker.view_tasks()
-        print("\n1. Playlists\n2. Tasks\n3. View Data\n4. Refresh\n0. Exit")
+        print("\n1. Playlists\n2. Tasks\n0. Exit")
         choice = input("Enter choice: ")
 
         if choice == '1':
             while True:
-                clear_console()
                 print("\n1. Choose Playlist\n2. Create Playlist\n3. Edit Playlist\n4. Delete Playlist\n5. View Playlists\n0. Exit")
                 choice = input("Enter choice: ")
                 if choice == '1':
@@ -405,14 +429,12 @@ if __name__ == "__main__":
                     print("Invalid choice. Please try again.")
         elif choice == '2':
             while True:
-                clear_console()
-                tracker.view_tasks()
-                print("\n1. Update data\n2. View tasks for current playlist\n3. View all tasks\n4. Delete all tasks\n5. Delete task by name\n0. Exit")
+                print("\n1. Update data\n2. Create task\n3. View all tasks\n4. Delete all tasks\n5. Delete task by name\n0. Exit")
                 choice = input("Enter choice: ")
                 if choice == '1':
                     tracker.update_data()
                 elif choice == '2':
-                    tracker.view_tasks()
+                    tracker.create_task()
                 elif choice == '3':
                     tracker.view_all_tasks()
                 elif choice == '4':
@@ -426,7 +448,6 @@ if __name__ == "__main__":
                     print("Invalid choice. Please try again.")
         elif choice == '3':
             while True:
-                clear_console()
                 print("\n1. View day\n2. View week\n3. View monthly\n4. View yearly\n5. View all\n0. Exit")
                 choice = input("Enter choice: ")
                 if choice == '1':
@@ -445,6 +466,8 @@ if __name__ == "__main__":
                     print("Invalid choice. Please try again.")
         elif choice == '4':
             tracker.refresh()
+        elif choice == '5':
+            clear_console()
         elif choice == '0':
             break
         else:
