@@ -24,10 +24,10 @@ class Tracker:
     def __init__(self):
         self.current_playlist = None
         self.current_task = None
-        self.df = pd.DataFrame(columns=["Date", "Playlists", "Tasks", "Scores", "Sensitivity", "Repetitions"])
+        self.df = pd.DataFrame(columns=["Date", "Tasks", "Scores", "Sensitivity", "Repetitions", "Old_Highscore", "Highscore", "Avg_Daily", "Avg_10", "Threshold", "Threshold_Achieved"])
 
     def create_task(self):
-        task_name = input("Enter task name")
+        task_name = input("Enter task name: ")
 
         while True:
             try:
@@ -38,14 +38,23 @@ class Tracker:
             except ValueError:
                 print("Invalid input. Please enter a valid positive integer for the initial highscore.")
 
-        threshold = round(0.95 * highscore, 2)
+        threshold = round(0.9 * highscore, 2)
 
         task_data = {
-            "task_name": task_name,
-            "highscore": highscore,
-            "threshold": threshold,
+            "Date": "",
+            "Tasks": task_name,
+            "Scores": [],
+            "Sensitivity": None,
+            "Repetitions": 0,
+            "Old_Highscore": None,
+            "Highscore": highscore,
+            "Avg_Daily": None,
+            "Avg_10": None,
+            "Threshold": threshold,
+            "Threshold_Achieved": None
         }
-        db.collection("tasks").document(f"{task_name}").set(task_data)
+
+        db.collection("tasks").document(task_name).set(task_data)
         print(f"Task '{task_name}' created successfully.")
 
     def edit_task(self, task_name):
@@ -61,8 +70,8 @@ class Tracker:
         new_threshold = round(0.95 * new_highscore, 2)
 
         db.collection("tasks").document(task_name).update({
-            "highscore": new_highscore,
-            "threshold": new_threshold,
+            "Highscore": new_highscore,
+            "Threshold": new_threshold,
         })
         print(f"Task '{task_name}' edited successfully.")
 
@@ -176,6 +185,173 @@ class Tracker:
             print(f"Tasks in Playlist '{playlist_name}': {', '.join(tasks)}")
         else:
             print(f"Playlist '{playlist_name}' does not exist.")
+
+    def choose_playlist(self):
+        playlists = db.collection("playlists").get()
+        if not playlists:
+            print("No playlists found.")
+            return
+
+        print("Select a playlist:")
+        for idx, playlist in enumerate(playlists):
+            playlist_name = playlist.id
+            print(f"{idx + 1}. {playlist_name}")
+
+        try:
+            selected_index = int(input("Enter the number of the playlist: ")) - 1
+            selected_playlist = playlists[selected_index]
+            playlist_name = selected_playlist.id
+            self.current_playlist = playlist_name
+            print(f"Playlist '{playlist_name}' selected.")
+        except (ValueError, IndexError):
+            print("Invalid input. Please select a valid playlist.")
+
+    def choose_task(self):
+        if not self.current_playlist:
+            print("Error: Please choose a playlist first.")
+            return
+
+        playlist_ref = db.collection("playlists").document(self.current_playlist)
+        playlist_data = playlist_ref.get().to_dict()
+
+        if playlist_data:
+            tasks = playlist_data.get("tasks", [])
+            if tasks:
+                print("Select a task from the playlist:")
+                for idx, task in enumerate(tasks):
+                    print(f"{idx + 1}. {task}")
+
+                try:
+                    selected_index = int(input("Enter the number of the task: ")) - 1
+                    selected_task = tasks[selected_index]
+                    self.current_task = selected_task
+                    print(f"Task '{selected_task}' selected.")
+                except (ValueError, IndexError):
+                    print("Invalid input. Please select a valid task.")
+            else:
+                print(f"No tasks found in the playlist '{self.current_playlist}'.")
+        else:
+            print(f"Playlist '{self.current_playlist}' does not exist.")
+
+    def update_task(self):
+        if not self.current_task:
+            print("Error: Please choose a task first.")
+            return
+
+        sensitivity = float(input("Enter sensitivity: "))
+        repetitions = int(input("Enter the number of repetitions: "))
+
+        scores = []
+        for rep in range(repetitions):
+            score = int(input(f"Enter score for repetition {rep + 1}: "))
+            scores.append(score)
+
+        date_today = datetime.now().strftime("%Y-%m-%d")
+
+        existing_entry = self.df[
+            (self.df["Tasks"].str.lower() == self.current_task.lower()) &
+            (self.df["Date"] == date_today.lower())
+            ]
+
+        if not existing_entry.empty:
+            repetitions += existing_entry["Repetitions"].values[0]
+            scores += existing_entry["Scores"].values[0]
+
+        task_ref = db.collection("tasks").document(self.current_task)
+        existing_task_data = task_ref.get().to_dict()
+
+        old_highscore = existing_task_data.get("Highscore", 0)
+
+        print(old_highscore)
+
+        highscore = max(scores)
+        avg_daily = sum(scores) / repetitions
+        avg_10 = sum(scores[-10:]) / min(10, repetitions)
+
+        if old_highscore != 0:
+            threshold = round(0.9 * old_highscore, 2)
+        else:
+            threshold = round(0.9 * highscore, 2)
+        print(threshold)
+        threshold_achieved = highscore >= threshold if threshold else None
+
+        task_data = {
+            "Date": date_today,
+            "Tasks": self.current_task,
+            "Scores": scores,
+            "Sensitivity": sensitivity,
+            "Repetitions": repetitions,
+            "Old_Highscore": old_highscore,
+            "Highscore": highscore,
+            "Avg_Daily": avg_daily,
+            "Avg_10": avg_10,
+            "Threshold": threshold,
+            "Threshold_Achieved": threshold_achieved
+        }
+
+        task_index = self.df.index[
+            (self.df["Tasks"].str.lower() == self.current_task.lower()) &
+            (self.df["Date"] == date_today.lower())
+            ].tolist()
+
+        if task_index:
+            task_index = task_index[0]
+            for key, value in task_data.items():
+                self.df.at[task_index, key] = value
+
+        task_ref = db.collection("tasks").document(self.current_task)
+        existing_task_data = task_ref.get().to_dict()
+
+        if existing_task_data:
+            existing_scores = existing_task_data.get("Scores", [])
+            existing_repetitions = existing_task_data.get("Repetitions", 0)
+
+            updated_scores = existing_scores + scores
+            updated_repetitions = existing_repetitions + repetitions
+
+            updated_task_data = {
+                "Date": date_today,
+                "Tasks": self.current_task,
+                "Scores": updated_scores,
+                "Sensitivity": sensitivity,
+                "Repetitions": updated_repetitions,
+                "Old_Highscore": old_highscore if highscore > old_highscore else None,
+                "Highscore": highscore,
+                "Avg_Daily": avg_daily,
+                "Avg_10": avg_10,
+                "Threshold": threshold,
+                "Threshold_Achieved": threshold_achieved
+            }
+
+            task_ref.update(updated_task_data)
+
+        print("Task data updated successfully.")
+
+    def view_task_data(self):
+        if not self.current_task:
+            print("Error: Please choose a task first.")
+            return
+
+        db = firestore.client()
+        task_ref = db.collection("tasks").document(self.current_task)
+        task_data = task_ref.get().to_dict()
+
+        if task_data:
+            print("\nTask Data:")
+
+            fields_order = ["Date", "Tasks", "Sensitivity", "Repetitions", "Old_Highscore", "Highscore", "Avg_Daily",
+                            "Avg_10", "Threshold", "Threshold_Achieved"]
+
+            date_format = "{:<20}"
+            headers = [date_format.format("Date")] + ["{:<15}".format(header) for header in fields_order[1:] if
+                                                      header != "Scores"]
+            print(" ".join(headers))
+            date_str = date_format.format(task_data["Date"])
+            data_str = " ".join(
+                ["{:<15}".format(str(task_data[header])) for header in fields_order[1:] if header != "Scores"])
+            print(date_str + " " + data_str)
+        else:
+            print(f"No data found for the task '{self.current_task}'.")
 
 
 if __name__ == "__main__":
